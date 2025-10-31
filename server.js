@@ -155,7 +155,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // Routes - Only include existing routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/chat', require('./routes/chat'));
-app.use('/lostfound', require('./routes/lostFound'));
+app.use('/lostfound', require('./routes/lostfound'));
 
 // ✅ CONDITIONAL: Only add routes if files exist
 try {
