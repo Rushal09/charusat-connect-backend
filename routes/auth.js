@@ -1,137 +1,175 @@
-// routes/auth.js
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
-const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const authMiddleware = require('../middleware/auth');
+const { OAuth2Client } = require('google-auth-library');
 
 const router = express.Router();
 
-// --- Google OAuth Client ---
+// Initialize Google OAuth client
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-// --- JWT Generator ---
+// Generate JWT token
 const generateToken = (userId) => {
-  return jwt.sign({ userId }, process.env.JWT_SECRET || 'charusat-secret', {
-    expiresIn: '7d'
-  });
+  return jwt.sign({ userId }, process.env.JWT_SECRET || 'charusat-secret', { expiresIn: '7d' });
 };
 
-// --- TEST ROUTES (for debugging) ---
+// TEST ROUTES - Add these for debugging
 router.get('/test', async (req, res) => {
   try {
     const userCount = await User.countDocuments();
+    
     res.json({
-      message: '✅ Auth service test successful',
+      message: 'Auth service test successful ✅',
       status: 'OK',
-      userCount,
-      googleClientConfigured: !!process.env.GOOGLE_CLIENT_ID,
-      jwtConfigured: !!process.env.JWT_SECRET,
-      mongoConfigured: !!process.env.MONGODB_URI,
-      environment: process.env.NODE_ENV || 'development',
-      timestamp: new Date().toISOString()
+      database: 'connected',
+      userCount: userCount,
+      googleClientId: !!process.env.GOOGLE_CLIENT_ID,
+      jwtSecret: !!process.env.JWT_SECRET,
+      mongoUri: !!process.env.MONGODB_URI,
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development'
     });
   } catch (error) {
+    console.error('❌ Test route error:', error);
     res.status(500).json({
-      message: '❌ Test route failed',
+      message: 'Test failed ❌',
+      database: 'connection failed',
       error: error.message
     });
   }
 });
 
-// --- GOOGLE LOGIN ---
+router.get('/google-test', (req, res) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  
+  res.json({
+    message: 'Google OAuth Configuration Test',
+    clientIdConfigured: !!clientId,
+    clientIdLength: clientId?.length || 0,
+    clientIdPreview: clientId ? `${clientId.substring(0, 20)}...` : 'Not configured',
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// POST /api/auth/google-login - Google OAuth login
 router.post('/google-login', async (req, res) => {
   try {
     const { token } = req.body;
-    if (!token)
-      return res.status(400).json({ message: 'Missing Google token' });
-
+    
+    console.log('🔍 Google login attempt');
+    console.log('🔑 Client ID configured:', !!process.env.GOOGLE_CLIENT_ID);
+    
     if (!process.env.GOOGLE_CLIENT_ID) {
       return res.status(500).json({
-        message: 'Google OAuth not configured on backend'
+        message: 'Google OAuth not configured on server'
       });
     }
-
-    // Verify Google token
+    
+    // Verify the Google token
     const ticket = await client.verifyIdToken({
       idToken: token,
       audience: process.env.GOOGLE_CLIENT_ID
     });
-
+    
     const payload = ticket.getPayload();
-    const email = payload.email;
-
-    if (!email.endsWith('@charusat.edu.in')) {
+    console.log('👤 Google user:', payload.email);
+    console.log('📧 Email domain check:', payload.email.endsWith('@charusat.edu.in'));
+    
+    // Check domain restriction
+    if (!payload.email.endsWith('@charusat.edu.in')) {
       return res.status(403).json({
-        message:
-          'Access denied. Please use your CHARUSAT email (@charusat.edu.in)'
+        message: 'Access denied. Please use your CHARUSAT email (@charusat.edu.in)'
       });
     }
-
-    // Find or create user
-    let user = await User.findOne({ email });
+    
+    // Check if user exists
+    let user = await User.findOne({ email: payload.email });
+    
     if (!user) {
-      const username = email.split('@')[0];
-      const emailMatch = email.match(/^(\d{2})([a-z]+)(\d+)@charusat\.edu\.in$/i);
+      // Create new user from Google data
+      const username = payload.email.split('@')[0]; // Extract username from email
+      
+      // Extract additional info from email pattern (e.g., 22dit085@charusat.edu.in)
+      const emailMatch = payload.email.match(/^(\d{2})([a-z]+)(\d+)@charusat\.edu\.in$/i);
       let year = 'Unknown';
       let branch = 'Unknown';
-
+      
       if (emailMatch) {
-        const yearPrefix = emailMatch[1];
-        const branchCode = emailMatch[2].toLowerCase();
-        const branchMap = {
-          dit: 'Information Technology',
-          cse: 'Computer Science Engineering',
-          ce: 'Computer Engineering',
-          it: 'Information Technology',
-          ec: 'Electronics & Communication',
-          ee: 'Electrical Engineering',
-          me: 'Mechanical Engineering',
-          civil: 'Civil Engineering',
-          ic: 'Instrumentation & Control',
-          bca: 'Bachelor of Computer Applications',
-          mca: 'Master of Computer Applications'
-        };
+        const yearPrefix = emailMatch[1]; // 22
+        const branchCode = emailMatch[2].toLowerCase(); // dit
+        
+        // Convert to full year
         year = `20${yearPrefix}`;
+        
+        // Map branch codes to full names
+        const branchMap = {
+          'dit': 'Information Technology',
+          'cse': 'Computer Science Engineering',
+          'ce': 'Computer Engineering',
+          'it': 'Information Technology',
+          'ec': 'Electronics & Communication',
+          'ee': 'Electrical Engineering',
+          'me': 'Mechanical Engineering',
+          'civil': 'Civil Engineering',
+          'ic': 'Instrumentation & Control',
+          'bca': 'Bachelor of Computer Applications',
+          'mca': 'Master of Computer Applications'
+        };
+        
         branch = branchMap[branchCode] || branchCode.toUpperCase();
       }
-
+      
+      // Create user without password (Google users don't need it)
       user = new User({
-        username,
-        email,
+        username: username,
+        email: payload.email,
         isGoogleUser: true,
         googleId: payload.sub,
-        isVerified: true,
+        isVerified: true, // Google users are pre-verified
         profile: {
           firstName: payload.given_name || '',
           lastName: payload.family_name || '',
-          year,
-          branch,
+          year: year,
+          branch: branch,
           profilePicture: payload.picture || ''
         }
       });
-
+      
       await user.save();
-      console.log(`✅ New Google user created: ${username}`);
+      console.log('✅ Created new Google user:', username, `(${year} - ${branch})`);
     } else {
+      // Update existing user with Google info
       user.googleId = payload.sub;
       user.isGoogleUser = true;
       user.isVerified = true;
-
-      if (payload.picture) {
+      
+      // Update profile picture if available
+      if (payload.picture && (!user.profile?.profilePicture || user.profile.profilePicture === '')) {
+        if (!user.profile) user.profile = {};
         user.profile.profilePicture = payload.picture;
       }
-      if (payload.given_name) user.profile.firstName = payload.given_name;
-      if (payload.family_name) user.profile.lastName = payload.family_name;
-
+      
+      // Update name if not set
+      if (payload.given_name && (!user.profile?.firstName || user.profile.firstName === '')) {
+        if (!user.profile) user.profile = {};
+        user.profile.firstName = payload.given_name;
+      }
+      
+      if (payload.family_name && (!user.profile?.lastName || user.profile.lastName === '')) {
+        if (!user.profile) user.profile = {};
+        user.profile.lastName = payload.family_name;
+      }
+      
       await user.save();
-      console.log(`✅ Google user updated: ${user.username}`);
+      console.log('✅ Updated existing user:', user.username);
     }
-
+    
+    // Generate JWT token (use consistent field name)
     const jwtToken = generateToken(user._id);
-
-    return res.json({
+    
+    res.json({
       message: 'Google login successful',
       token: jwtToken,
       user: {
@@ -143,48 +181,73 @@ router.post('/google-login', async (req, res) => {
         isVerified: user.isVerified
       }
     });
+    
   } catch (error) {
-    console.error('❌ Google login error:', error.message);
-    return res.status(500).json({
-      message: 'Google authentication failed. Please try again later.',
+    console.error('❌ Google login error:', error);
+    
+    // Handle specific Google OAuth errors
+    if (error.message.includes('Token used too early')) {
+      return res.status(400).json({
+        message: 'Invalid Google token. Please try signing in again.'
+      });
+    }
+    
+    if (error.message.includes('Invalid token signature')) {
+      return res.status(400).json({
+        message: 'Invalid Google authentication. Please try again.'
+      });
+    }
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      console.error('❌ Validation errors:', error.errors);
+      return res.status(400).json({
+        message: 'User validation failed',
+        errors: Object.keys(error.errors).map(key => ({
+          field: key,
+          message: error.errors[key].message
+        }))
+      });
+    }
+    
+    res.status(500).json({
+      message: 'Google authentication failed. Please try again.',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
 
-// --- REGISTER ---
+// Register
 router.post('/register', async (req, res) => {
   try {
     const { email, username, password, year, branch } = req.body;
 
+    // Validate CHARUSAT email domain
     if (!email.endsWith('@charusat.edu.in')) {
-      return res.status(400).json({
-        message: 'Please use your CHARUSAT email address (@charusat.edu.in)'
+      return res.status(400).json({ 
+        message: 'Please use your CHARUSAT email address (@charusat.edu.in)' 
       });
     }
 
-    const existingUser = await User.findOne({
-      $or: [{ email }, { username }]
+    // Check if user exists
+    const existingUser = await User.findOne({ 
+      $or: [{ email }, { username }] 
     });
-
+    
     if (existingUser) {
-      return res.status(400).json({
-        message:
-          existingUser.email === email
-            ? 'Email already registered'
-            : 'Username already taken'
+      return res.status(400).json({ 
+        message: existingUser.email === email ? 'Email already registered' : 'Username already taken'
       });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-
+    // Create user
     const user = new User({
       email,
       username,
-      password: hashedPassword,
+      password,
+      profile: { year, branch },
       isGoogleUser: false,
-      isVerified: false,
-      profile: { year, branch }
+      isVerified: false // Regular users need email verification
     });
 
     await user.save();
@@ -203,34 +266,49 @@ router.post('/register', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Registration error:', error.message);
-    res.status(500).json({
-      message: 'Registration failed. Please try again.',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    console.error('Registration error:', error);
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({ 
+        message: 'Validation failed', 
+        errors: validationErrors 
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Registration failed. Please try again.', 
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined 
     });
   }
 });
 
-// --- LOGIN ---
+// Login
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    // Find user by email
     const user = await User.findOne({ email });
-    if (!user)
+    if (!user) {
       return res.status(401).json({ message: 'Invalid email or password' });
+    }
 
-    if (user.isGoogleUser && !user.password) {
-      return res.status(400).json({
-        message:
-          'This account uses Google sign-in. Please use the "Sign in with Google" button.'
+    // Check if this is a Google user trying to use password login
+    if (user.isGoogleUser) {
+      return res.status(400).json({ 
+        message: 'This account uses Google sign-in. Please use the "Sign in with Google" button.' 
       });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password || '');
-    if (!isMatch)
+    // Verify password
+    const isMatch = await user.comparePassword(password);
+    if (!isMatch) {
       return res.status(401).json({ message: 'Invalid email or password' });
+    }
 
+    // Generate token
     const token = generateToken(user._id);
 
     res.json({
@@ -246,21 +324,25 @@ router.post('/login', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Login error:', error.message);
-    res.status(500).json({
-      message: 'Login failed. Please try again later.',
+    console.error('Login error:', error);
+    res.status(500).json({ 
+      message: 'Login failed. Please try again.',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
 
-// --- GET CURRENT USER ---
+// Get current user
 router.get('/me', authMiddleware, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('-password');
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    // Get user with populated profile
+    const user = await User.findById(req.user.userId).select('-password');
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
 
-    res.json({
+    res.json({ 
       user: {
         id: user._id,
         username: user.username,
@@ -272,26 +354,28 @@ router.get('/me', authMiddleware, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Get user error:', error.message);
+    console.error('Get user error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// --- LOGOUT ---
+// Logout (optional - mainly clears any server-side sessions if needed)
 router.post('/logout', authMiddleware, async (req, res) => {
   try {
-    // JWT logout is client-side; no token invalidation server-side.
+    // Since we're using JWT tokens, logout is mainly handled client-side
+    // But we can add any server-side cleanup here if needed
+    
     res.json({ message: 'Logout successful' });
   } catch (error) {
-    console.error('❌ Logout error:', error.message);
+    console.error('Logout error:', error);
     res.status(500).json({ message: 'Logout failed' });
   }
 });
 
-// --- HEALTH CHECK ---
+// Health check route
 router.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
+  res.json({ 
+    status: 'OK', 
     message: 'Auth service is running',
     googleOAuth: !!process.env.GOOGLE_CLIENT_ID,
     timestamp: new Date().toISOString()

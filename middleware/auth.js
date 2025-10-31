@@ -1,51 +1,27 @@
-// routes/auth.js
-const express = require('express');
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const router = express.Router();
 
-// POST /api/auth/login
-router.post('/login', async (req, res) => {
+const authMiddleware = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({ message: 'Access denied. No token provided.' });
+    }
 
-    // 1️⃣ Check if user exists
-    const user = await User.findOne({ email });
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.userId);
+    
     if (!user) {
-      return res.status(400).json({ message: 'User not found.' });
+      return res.status(401).json({ message: 'Invalid token or user not found.' });
     }
 
-    // 2️⃣ If Google user but no password — force Google login
-    if (user.authProvider === 'google' && !user.password) {
-      return res.status(400).json({
-        message: 'This account was created using Google. Please use "Sign in with Google".'
-      });
-    }
-
-    // 3️⃣ Compare passwords
-    const isMatch = await bcrypt.compare(password, user.password || '');
-    if (!isMatch) {
-      return res.status(400).json({ message: 'Invalid email or password.' });
-    }
-
-    // 4️⃣ Create JWT token
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-
-    // 5️⃣ Return user (excluding password)
-    res.json({
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        authProvider: user.authProvider || 'local'
-      }
-    });
+    req.user = user;
+    req.userId = user._id;
+    next();
   } catch (error) {
-    console.error('Login Error:', error.message);
-    res.status(500).json({ message: 'Server error during login.' });
+    res.status(401).json({ message: 'Invalid token.' });
   }
-});
+};
 
-module.exports = router;
+module.exports = authMiddleware;
